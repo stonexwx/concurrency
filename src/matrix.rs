@@ -2,9 +2,15 @@ use core::fmt;
 use std::{
     fmt::{Debug, Display},
     ops::{Add, AddAssign, Mul},
+    sync::mpsc,
+    thread,
 };
 
 use anyhow::{anyhow, Result};
+
+use crate::{vector::dot_product, Vector};
+
+const NUM_THREADS: usize = 4;
 
 pub struct Matrix<T> {
     data: Vec<T>,
@@ -54,22 +60,99 @@ impl<T: Display + std::fmt::Debug> Debug for Matrix<T> {
     }
 }
 
+impl<T> Mul for Matrix<T>
+where
+    T: Add<Output = T> + Mul<Output = T> + AddAssign + Default + Copy + Send + 'static,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        multiply(&self, &rhs).expect("Matrix multiplication failed")
+    }
+}
+
+pub struct MsgInput<T> {
+    idx: usize,
+    row: Vector<T>,
+    col: Vector<T>,
+}
+
+impl<T> MsgInput<T> {
+    pub fn new(idx: usize, row: Vector<T>, col: Vector<T>) -> Self {
+        Self { idx, row, col }
+    }
+}
+
+pub struct MsgOutput<T> {
+    idx: usize,
+    value: T,
+}
+
+pub struct Msg<T> {
+    input: MsgInput<T>,
+    sender: oneshot::Sender<MsgOutput<T>>,
+}
+
+impl<T> Msg<T> {
+    pub fn new(input: MsgInput<T>, sender: oneshot::Sender<MsgOutput<T>>) -> Self {
+        Self { input, sender }
+    }
+}
+
 pub fn multiply<T>(a: &Matrix<T>, b: &Matrix<T>) -> Result<Matrix<T>>
 where
-    T: Add<Output = T> + Mul<Output = T> + AddAssign + Default + Copy,
+    T: Add<Output = T> + Mul<Output = T> + AddAssign + Default + Copy + Send + 'static,
 {
     if a.cols != b.rows {
         return Err(anyhow!("Matrix size mismatch"));
     }
 
-    let mut data = vec![T::default(); a.rows * b.cols];
+    let senders = (0..NUM_THREADS)
+        .map(|_| {
+            let (tx, rx) = mpsc::channel::<Msg<T>>();
+            thread::spawn(move || {
+                for msg in rx {
+                    let value = dot_product(msg.input.row, msg.input.col)?;
+                    if let Err(e) = msg.sender.send(MsgOutput {
+                        idx: msg.input.idx,
+                        value,
+                    }) {
+                        eprintln!("Error: {}", e);
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            tx
+        })
+        .collect::<Vec<_>>();
+    let matrix_len: usize = a.rows * b.cols;
+    let mut data = vec![T::default(); matrix_len];
+    let mut receivers = Vec::with_capacity(matrix_len);
 
     for i in 0..a.rows {
         for j in 0..b.cols {
-            for k in 0..a.cols {
-                data[i * b.cols + j] += a.data[i * a.cols + k] * b.data[k * b.cols + j];
-            }
+            let row = Vector::new((a.data[i * a.cols..(i + 1) * a.cols]).to_vec());
+            let col = Vector::new(
+                b.data[j..]
+                    .iter()
+                    .step_by(b.cols)
+                    .copied()
+                    .collect::<Vec<_>>(),
+            );
+            let idx = i * b.cols + j;
+            let input = MsgInput::new(idx, row, col);
+            let (tx, rx) = oneshot::channel();
+            let msg = Msg::new(input, tx);
+            if let Err(e) = senders[idx % NUM_THREADS].send(msg) {
+                eprintln!("Error: {}", e);
+            };
+            let ret = rx.recv()?;
+            receivers.push(ret);
         }
+    }
+
+    for ret in receivers {
+        data[ret.idx] = ret.value;
     }
 
     Ok(Matrix::new(data, a.rows, b.cols))
@@ -83,7 +166,7 @@ mod tests {
     fn test_matrix_multiply() -> Result<()> {
         let a = Matrix::new(vec![1, 2, 3, 4], 2, 2);
         let b = Matrix::new(vec![1, 2, 3, 4], 2, 2);
-        let c = multiply(&a, &b)?;
+        let c = a * b;
         assert_eq!(c.rows, 2);
         assert_eq!(c.cols, 2);
         assert_eq!(c.data, vec![7, 10, 15, 22]);
