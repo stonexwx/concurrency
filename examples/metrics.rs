@@ -40,7 +40,7 @@ fn request_worker(mut metrics: Metrics) -> Result<()> {
             let mut rng = rand::thread_rng();
             thread::sleep(std::time::Duration::from_millis(rng.gen_range(50..800)));
             let page = rng.gen_range(1..256);
-            metrics.increment(format!("page{}", page)).unwrap();
+            metrics.increment(format!("page{}", page))?;
         }
         #[allow(unreachable_code)]
         Ok::<(), anyhow::Error>(())
