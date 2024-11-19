@@ -1,4 +1,7 @@
 {
-  "editor.fontSize": 20,
-  "github.copilot.chat.terminalChatLocation": "quickChat"
+  "editor.fontSize": 18,
+  "github.copilot.chat.terminalChatLocation": "quickChat",
+  "editor.fontFamily": "'Jetbrains Mono',Menlo, Monaco, 'Courier New', monospace",
+  "files.autoSave": "onFocusChange",
+  "editor.formatOnSaveMode": "modificationsIfAvailable"
 }
